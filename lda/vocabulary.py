@@ -11,7 +11,7 @@ def load_corpus(range):
     if m:
         start = int(m.group(1))
         end = int(m.group(2))
-        from nltk.corpus import brown as corpus
+        from nltk.corpus import reuters as corpus
         return [corpus.words(fileid) for fileid in corpus.fileids()[start:end]]
 
 def load_file(filename):

@@ -6,9 +6,12 @@
 # (c)2010-2011 Nakatani Shuyo / Cybozu Labs Inc.
 
 import numpy
+from itertools import groupby
+import os, pickle
+import numpy as np
 
 class LDA:
-    def __init__(self, K, alpha, beta, docs, V, smartinit=True):
+    def __init__(self, K, alpha, beta, docs, V, fixedtopics = False, topic_file = "", smartinit=True):
         self.K = K
         self.alpha = alpha # parameter of topics prior
         self.beta = beta   # parameter of words prior
@@ -19,6 +22,11 @@ class LDA:
         self.n_m_z = numpy.zeros((len(self.docs), K)) + alpha     # word count of each document and topic
         self.n_z_t = numpy.zeros((K, V)) + beta # word count of each topic and vocabulary
         self.n_z = numpy.zeros(K) + V * beta    # word count of each topic
+
+        if (fixedtopics):
+            self.read_topics(topic_file)
+        else:
+            self.phi = None
 
         self.N = 0
         for m, doc in enumerate(docs):
@@ -49,7 +57,10 @@ class LDA:
                 self.n_z[z] -= 1
 
                 # sampling topic new_z for t
-                p_z = self.n_z_t[:, t] * n_m_z / self.n_z
+                if self.phi is None:
+                    p_z = self.n_z_t[:, t] * n_m_z / self.n_z
+                else:
+                    p_z = np.squeeze(self.phi[:, t]) * n_m_z
                 new_z = numpy.random.multinomial(1, p_z / p_z.sum()).argmax()
 
                 # set z the new topic and increment counters
@@ -64,31 +75,65 @@ class LDA:
 
     def perplexity(self, docs=None):
         if docs == None: docs = self.docs
-        phi = self.worddist()
+        if self.phi is None:
+            phi = self.worddist()
+        else:
+            phi = self.phi
         log_per = 0
         N = 0
         Kalpha = self.K * self.alpha
         for m, doc in enumerate(docs):
             theta = self.n_m_z[m] / (len(self.docs[m]) + Kalpha)
             for w in doc:
-                log_per -= numpy.log(numpy.inner(phi[:,w], theta))
+                log_per -= numpy.log(np.inner(phi[:,w].ravel(), theta))
             N += len(doc)
         return numpy.exp(log_per / N)
 
+    def read_topics(self, topic_file):
+        self.phi = []
+        with open(topic_file, 'r') as f:
+            self.voca = f.readline().split(",") # skip the vocabulary line
+            for t in range(self.K):
+                topic = f.readline().split(",")
+                topic = [float(i) for i in topic]
+                self.phi.append(topic)
+
+        self.phi = np.asarray(self.phi)
+
 def lda_learning(lda, iteration, voca):
     pre_perp = lda.perplexity()
-    print ("initial perplexity=%f" % pre_perp)
+    #print ("initial perplexity=%f" % pre_perp)
     for i in range(iteration):
         lda.inference()
         perp = lda.perplexity()
-        print ("-%d p=%f" % (i + 1, perp))
+        n_clusters_min_10 = sum([1 if x > 10 else 0 for x in (lda.n_z - lda.V * lda.beta)])
+        print ("-%d p=%f clusters=%d big_clusters=%d" % (i + 1, perp, lda.K, n_clusters_min_10))
         if pre_perp:
             if pre_perp < perp:
-                output_word_topic_dist(lda, voca)
+                if lda.phi is None:
+                    output_word_topic_dist(lda, voca)
                 pre_perp = None
             else:
                 pre_perp = perp
-    output_word_topic_dist(lda, voca)
+    if lda.phi is None:
+        output_word_topic_dist(lda, voca)
+        save_topics(lda, voca)
+    print_topic_counts(lda, 10)
+
+def print_topic_counts(lda, n_docs):
+    for i in range(min(len(lda.docs), n_docs)):
+        counts = [(key, len(list(group))) for key, group in groupby(sorted(lda.z_m_n[i]))]
+        print("Document " + str(i))
+        print("Topics: " + str([x[0] for x in counts]))
+        print("Counts: " + str([x[1] for x in counts]))
+
+def save_topics(lda, voca):
+    phi = lda.worddist()
+
+    with open('topics.csv', 'w') as f:
+        f.write(",".join(voca) + "\n")
+        for k in range(lda.K):
+            f.write(",".join([str(x) for x in phi[k,:]]) + "\n")
 
 def output_word_topic_dist(lda, voca):
     zcount = numpy.zeros(lda.K, dtype=int)
@@ -101,7 +146,11 @@ def output_word_topic_dist(lda, voca):
             else:
                 wordcount[z][x] = 1
 
-    phi = lda.worddist()
+    if lda.phi is None:
+        phi = lda.worddist()
+    else:
+        phi = self.phi
+
     for k in range(lda.K):
         print ("\n-- topic: %d (%d words)" % (k, zcount[k]))
         for w in numpy.argsort(-phi[k])[:20]:
@@ -121,6 +170,10 @@ def main():
     parser.add_option("--stopwords", dest="stopwords", help="exclude stop words", action="store_true", default=False)
     parser.add_option("--seed", dest="seed", type="int", help="random seed")
     parser.add_option("--df", dest="df", type="int", help="threshold of document freaquency to cut words", default=0)
+    parser.add_option("--fixed-topics", dest="fixedtopics", help="Use fixed topics instead of learning topics", action="store_true", default=False)
+    parser.add_option("--topics", dest="topic_file", type="str", 
+        help="CSV file with the topics: columns are words from vocabulary, rows are topics", default="topics.csv")
+    parser.add_option("-m", dest="doc_id", type="int", help="Document if the mixtures have to be estimated for one document only", default=None)
     (options, args) = parser.parse_args()
     if not (options.filename or options.corpus): parser.error("need corpus filename(-f) or corpus range(-c)")
 
@@ -132,11 +185,23 @@ def main():
     if options.seed != None:
         numpy.random.seed(options.seed)
 
-    voca = vocabulary.Vocabulary(options.stopwords)
-    docs = [voca.doc_to_ids(doc) for doc in corpus]
-    if options.df > 0: docs = voca.cut_low_freq(docs, options.df)
+    pickle_file = "docs" + str(options.corpus) + ".pickle"
+    if os.path.isfile(pickle_file): 
+        voca, docs = pickle.load(open(pickle_file, 'rb'))
+    else:
+        voca = vocabulary.Vocabulary(options.stopwords)
+        docs = [voca.doc_to_ids(doc) for doc in corpus]
+        if options.df > 0: docs = voca.cut_low_freq(docs, options.df)
 
-    lda = LDA(options.K, options.alpha, options.beta, docs, voca.size(), options.smartinit)
+        with open(pickle_file, 'wb') as f:
+            pickle.dump([voca, docs], f) 
+
+    m = options.doc_id
+    if m is not None:
+        docs = [docs[m]]
+        print("Document " + str(m))
+
+    lda = LDA(options.K, options.alpha, options.beta, docs, voca.size(), options.fixedtopics, options.topic_file, options.smartinit)
     print ("corpus=%d, words=%d, K=%d, a=%f, b=%f" % (len(corpus), len(voca.vocas), options.K, options.alpha, options.beta))
 
     #import cProfile

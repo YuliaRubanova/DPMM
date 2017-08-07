@@ -9,5 +9,6 @@ Cell processes leave a unique signature of mutation types in cancer genome. Usin
 I propose to use the variation of Dirichlet process mixture model to find the active signatures. In this model, the set of active signatures is sampled from Dirichlet distribution and then is fitted using mixture of multinomials. The model is fit through Gibbs sampling.
 
 ### Code
-The model is located in lda/dpmm.py. In this preliminary state, the work is not intended for public use.
+The majority of the code was forked from shuyo/iir.
+The implementation of DPMM model is located in lda/dpmm.py. In this preliminary state, the work is not intended for public use.
 
